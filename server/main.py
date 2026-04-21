@@ -120,6 +120,28 @@ class CreatePurchaseOrderRequest(BaseModel):
     expected_delivery_date: str
     notes: Optional[str] = None
 
+class CreateOrderRequest(BaseModel):
+    customer: str
+    items: List[dict]
+    warehouse: Optional[str] = None
+    category: Optional[str] = None
+
+class Task(BaseModel):
+    id: int
+    title: str
+    priority: str
+    dueDate: str
+    status: str
+
+class CreateTaskRequest(BaseModel):
+    title: str
+    priority: str
+    dueDate: str
+
+# In-memory task storage (starts empty; user tasks come from the frontend mock)
+tasks_store: List[dict] = []
+_next_task_id = 1000
+
 # API endpoints
 @app.get("/")
 def root():
@@ -160,6 +182,28 @@ def get_order(order_id: str):
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
     return order
+
+@app.post("/api/orders", response_model=Order)
+def create_order(order_request: CreateOrderRequest):
+    """Create a new restocking order"""
+    from datetime import datetime, timedelta
+    now = datetime.utcnow()
+    new_id = str(max(int(o["id"]) for o in orders) + 1)
+    total = round(sum(i["quantity"] * i["unit_price"] for i in order_request.items), 2)
+    new_order = {
+        "id": new_id,
+        "order_number": f"ORD-RESTOCK-{new_id.zfill(4)}",
+        "customer": order_request.customer,
+        "items": order_request.items,
+        "status": "Submitted",
+        "order_date": now.isoformat(),
+        "expected_delivery": (now + timedelta(days=14)).isoformat(),
+        "total_value": total,
+        "warehouse": order_request.warehouse,
+        "category": order_request.category
+    }
+    orders.append(new_order)
+    return new_order
 
 @app.get("/api/demand", response_model=List[DemandForecast])
 def get_demand_forecasts():
@@ -303,6 +347,65 @@ def get_monthly_trends():
     result = list(months.values())
     result.sort(key=lambda x: x['month'])
     return result
+
+@app.get("/api/tasks", response_model=List[Task])
+def get_tasks():
+    return tasks_store
+
+@app.post("/api/tasks", response_model=Task)
+def create_task(task_request: CreateTaskRequest):
+    global _next_task_id
+    new_task = {
+        "id": _next_task_id,
+        "title": task_request.title,
+        "priority": task_request.priority,
+        "dueDate": task_request.dueDate,
+        "status": "pending"
+    }
+    _next_task_id += 1
+    tasks_store.append(new_task)
+    return new_task
+
+@app.delete("/api/tasks/{task_id}")
+def delete_task(task_id: int):
+    global tasks_store
+    task = next((t for t in tasks_store if t["id"] == task_id), None)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    tasks_store = [t for t in tasks_store if t["id"] != task_id]
+    return {"ok": True}
+
+@app.patch("/api/tasks/{task_id}", response_model=Task)
+def toggle_task(task_id: int):
+    task = next((t for t in tasks_store if t["id"] == task_id), None)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    task["status"] = "completed" if task["status"] == "pending" else "pending"
+    return task
+
+@app.post("/api/purchase-orders", response_model=PurchaseOrder)
+def create_purchase_order(po_request: CreatePurchaseOrderRequest):
+    from datetime import datetime
+    new_po = {
+        "id": f"PO-{len(purchase_orders) + 1:04d}",
+        "backlog_item_id": po_request.backlog_item_id,
+        "supplier_name": po_request.supplier_name,
+        "quantity": po_request.quantity,
+        "unit_cost": po_request.unit_cost,
+        "expected_delivery_date": po_request.expected_delivery_date,
+        "status": "Pending",
+        "created_date": datetime.utcnow().strftime("%Y-%m-%d"),
+        "notes": po_request.notes
+    }
+    purchase_orders.append(new_po)
+    return new_po
+
+@app.get("/api/purchase-orders/{backlog_item_id}", response_model=PurchaseOrder)
+def get_purchase_order_by_backlog_item(backlog_item_id: str):
+    po = next((po for po in purchase_orders if po["backlog_item_id"] == backlog_item_id), None)
+    if not po:
+        raise HTTPException(status_code=404, detail="Purchase order not found")
+    return po
 
 if __name__ == "__main__":
     import uvicorn
